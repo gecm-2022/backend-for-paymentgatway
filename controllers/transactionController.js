@@ -1,140 +1,151 @@
 const Wallet = require('../models/Wallet');
 const Transaction = require('../models/Transaction');
 const User = require('../models/User');
-const { initiatePaytmPayment, verifyPaytmPayment } = require('../utils/paytmApi');
 
 // Fetch user's transactions
 exports.getUserTransactions = async (req, res) => {
   try {
-    const userId = req.user.id;
+    const userId = req.user.id; // Extract user ID from authenticated user (from authMiddleware)
 
-    // Fetch transactions for the user
-    const transactions = await Transaction.find({ userId }).sort({ createdAt: -1 });
+    // Fetch all transactions for the authenticated user
+    const transactions = await Transaction.find({ userId });
 
-    res.status(200).json({ transactions });
+    if (!transactions.length) {
+      return res.status(404).json({ success: false, message: 'No transactions found for this user' });
+    }
+
+    res.status(200).json({ success: true, transactions });
   } catch (error) {
-    console.error('Error fetching transactions:', error.message);
-    res.status(500).json({ success: false, error: 'Internal server error' });
+    console.error(error);
+    res.status(500).json({ success: false, message: 'Error fetching transactions' });
   }
 };
 
-// Recharge wallet
-exports.rechargeWallet = async (req, res) => {
-  const { userId, amount } = req.body;
-
+// Create a new transaction
+exports.createTransaction = async (req, res) => {
   try {
-    // Create a new order ID
-    const orderId = `ORDER_${new Date().getTime()}`;
+    const userId = req.user.id; // Extract user ID from authenticated user
+    const type = 'recharge';
+    const { amount } = req.body;
 
-    // Initiate Paytm payment
-    const paytmResponse = await initiatePaytmPayment(orderId, amount, userId);
-
-    if (paytmResponse.success) {
-      res.status(200).json({
-        success: true,
-        paytmUrl: paytmResponse.paytmUrl,
-        paytmParams: paytmResponse.paytmParams,
-      });
-    } else {
-      res.status(400).json({ success: false, error: paytmResponse.error });
+    // Validate that type is either 'recharge' or 'withdrawal'
+    if (!['recharge', 'withdrawal'].includes(type)) {
+      return res.status(400).json({ success: false, message: 'Invalid transaction type' });
     }
+
+    // Create a transaction for the authenticated user
+    const newTransaction = new Transaction({
+      userId,
+      type,
+      amount,
+      status: 'pending', // Transaction starts as pending
+    });
+
+    await newTransaction.save();
+    res.status(201).json({ success: true, transaction: { _id: newTransaction._id } });
   } catch (error) {
-    console.error('Recharge error:', error.message);
-    res.status(500).json({ success: false, error: 'Recharge error' });
+    console.error(error);
+    res.status(500).json({ success: false, message: 'Error creating transaction' });
   }
 };
 
-// Verification and updating the wallet balance after Paytm callback
-exports.verifyAndCreditWallet = async (req, res) => {
+
+// Update transaction with refId (entered by user)
+exports.updateTransactionRefId = async (req, res) => {
   try {
-    const verificationResponse = await verifyPaytmPayment(req.body);
+    const userId = req.user.id; // Extract user ID from authenticated user
+    const { transactionId, refId } = req.body;
+    // console.log("Transaction ID:", transactionId, "User ID:", userId);
 
-    if (verificationResponse.success) {
-      const { orderId, userId, amount } = verificationResponse;
 
-      // Find or create the wallet for the user
-      let wallet = await Wallet.findOne({ userId });
-      if (!wallet) {
-        wallet = await Wallet.create({ userId, balance: 0 });
-      }
+    // Find the transaction by its ID and ensure it belongs to the authenticated user
+    const transaction = await Transaction.findOne({ _id: transactionId, userId });
 
-      // Update wallet balance
-      const updatedWallet = await Wallet.findOneAndUpdate(
-        { userId },
-        { $inc: { balance: amount } },
-        { new: true }
-      );
-
-      // Log the transaction
-      const transaction = await new Transaction({
-        userId,
-        type: 'recharge',
-        amount,
-        orderId,
-      }).save();
-
-      // Update user's transaction list
-      await User.findByIdAndUpdate(userId, { $push: { transactions: transaction._id } });
-
-      res.status(200).json({ success: true, wallet: updatedWallet });
-    } else {
-      res.status(400).json({ success: false, error: verificationResponse.error });
+    if (!transaction) {
+      return res.status(404).json({ success: false, message: 'Transaction not found or does not belong to this user' });
     }
+
+    // Update the refId and save the transaction
+    transaction.refId = refId;
+    await transaction.save();
+
+    res.status(200).json({ success: true, transaction });
   } catch (error) {
-    console.error('Verification error:', error.message);
-    res.status(500).json({ success: false, error: 'Verification error' });
+    console.error(error);
+    res.status(500).json({ success: false, message: 'Error updating transaction' });
   }
 };
 
-// Withdraw from wallet
-exports.withdrawFromWallet = async (req, res) => {
-  const { userId, amount } = req.body;
-
+// Admin route to get all transactions
+exports.getAllTransactions = async (req, res) => {
   try {
-    // Find the wallet for the user
-    const wallet = await Wallet.findOne({ userId });
+    const { type, status } = req.query;
 
-    if (!wallet || wallet.balance < amount) {
-      return res.status(400).json({ success: false, error: 'Insufficient balance' });
+    // Create filter object
+    const filter = {
+      refId: { $exists: true, $ne: "" }
+    };
+
+    if (type) {
+      filter.type = type;
     }
 
-    // Create a new order ID
-    const orderId = `ORDER_${new Date().getTime()}`;
-
-    // Initiate Paytm payment
-    const paytmResponse = await initiatePaytmPayment(orderId, -amount, userId);
-
-    if (paytmResponse.success) {
-      const verificationResponse = await verifyPaytmPayment(paytmResponse);
-
-      if (verificationResponse.success) {
-        // Update wallet balance
-        const updatedWallet = await Wallet.findOneAndUpdate(
-          { userId },
-          { $inc: { balance: -amount } },
-          { new: true }
-        );
-
-        // Log the transaction
-        const transaction = await new Transaction({
-          userId,
-          type: 'withdrawal',
-          amount,
-          orderId,
-        }).save();
-
-        // Update user's transaction list
-        await User.findByIdAndUpdate(userId, { $push: { transactions: transaction._id } });
-
-        res.status(200).json({ success: true, wallet: updatedWallet });
-      } else {
-        res.status(400).json({ success: false, error: verificationResponse.error });
-      }
-    } else {
-      res.status(400).json({ success: false, error: paytmResponse.error });
+    if (status) {
+      filter.status = status;
     }
+
+    // Fetch transactions based on filter
+    const transactions = await Transaction.find(filter);
+
+    res.status(200).json({ success: true, transactions });
   } catch (error) {
-    console.error('Withdrawal error:', error.message);
-    res.status(500).json({ success: false, error: 'Withdrawal error' });
+    console.error('Error fetching transactions:', error);
+    res.status(500).json({ success: false, message: 'Error fetching transactions' });
   }
 };
+
+
+// Confirm a transaction
+exports.confirmTransaction = async (req, res) => {
+  try {
+    const { transactionId } = req.params;
+    const transaction = await Transaction.findById(transactionId);
+
+    if (!transaction) {
+      return res.status(404).json({ success: false, message: 'Transaction not found' });
+    }
+
+    transaction.status = 'completed';
+    await transaction.save();
+
+    res.status(200).json({ success: true, transaction });
+  } catch (error) {
+    console.error('Error confirming transaction:', error);
+    res.status(500).json({ success: false, message: 'Error confirming transaction' });
+  }
+};
+
+// Decline a transaction
+exports.declineTransaction = async (req, res) => {
+  try {
+    const { transactionId } = req.params;
+    const transaction = await Transaction.findById(transactionId);
+
+    if (!transaction) {
+      return res.status(404).json({ success: false, message: 'Transaction not found' });
+    }
+
+    transaction.status = 'failed';
+    await transaction.save();
+
+    res.status(200).json({ success: true, transaction });
+  } catch (error) {
+    console.error('Error declining transaction:', error);
+    res.status(500).json({ success: false, message: 'Error declining transaction' });
+  }
+};
+
+
+
+
+
