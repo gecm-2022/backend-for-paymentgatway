@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { rechargeWallet, withdrawFromWallet, getUserTransactions, createTransaction, updateTransactionRefId, getAllTransactions, declineTransaction, confirmTransaction } = require('../controllers/transactionController');
+const { rechargeWallet, withdrawFromWallet, getUserTransactions, createTransaction, updateTransactionRefId, getAllTransactions, declineTransaction, confirmTransaction ,updateTransactionUpiId} = require('../controllers/transactionController');
 const authMiddleware = require('../middleware/authmiddleware');
 
 // Apply authentication middleware to these routes
@@ -13,5 +13,6 @@ router.post('/updateTransactionRefId', authMiddleware, updateTransactionRefId);
 router.put('/confirmTransaction/:transactionId', authMiddleware, confirmTransaction);
 router.put('/declineTransaction/:transactionId', authMiddleware, declineTransaction);
 
+router.post('/updateTransactionUpiId', authMiddleware, updateTransactionUpiId);
 
 module.exports = router;

@@ -11,6 +11,10 @@ const transactionSchema = new mongoose.Schema({
     sparse: true,
     unique: true,
   },
+  upiId: {
+    type: String, // Add UPI ID field
+    sparse: true, // Sparse allows it to be null for other types of transactions
+  },
   type: {
     type: String,
     enum: ['recharge', 'withdrawal'],
